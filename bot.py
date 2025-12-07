@@ -3,9 +3,11 @@ import json
 import random
 import requests
 import logging
+import time
+from collections import defaultdict
 from flask import Flask, request, jsonify
 
-# 设置日志级别
+# 日志配置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -13,12 +15,16 @@ app = Flask(__name__)
 
 # === 配置 ===
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-BOT_USERNAME = os.environ["BOT_USERNAME"].lower()  # 强制小写
+BOT_USERNAME = os.environ["BOT_USERNAME"].lower()
 CONFIG_URL = os.environ.get(
     "CONFIG_URL",
     "https://raw.githubusercontent.com/huangya777/tg/main/replies.json"
 )
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# 防刷冷却：每个用户 3 秒内只响应一次
+_last_trigger = defaultdict(float)
+COOLDOWN_SECONDS = 3
 
 # 默认安全回复
 DEFAULT_REPLIES = {
@@ -65,16 +71,29 @@ def handle_incoming_message(message):
     user_id = from_user.get("id")
     message_id = message["message_id"]
 
+    # 获取 bot 自身 ID
     bot_id = int(BOT_TOKEN.split(":")[0])
+
+    # 忽略机器人自己发的消息（防循环）
     if user_id == bot_id:
+        logger.info("🤖 忽略机器人自身消息")
         return
 
     is_group = chat["type"] in ("group", "supergroup")
 
-    # === 增强版 @ 检测 ===
+    # === 冷却检查（防刷）===
+    current_time = time.time()
+    if current_time - _last_trigger[user_id] < COOLDOWN_SECONDS:
+        logger.info(f"⏳ 用户 {user_id} 触发冷却，跳过响应")
+        return
+    _last_trigger[user_id] = current_time
+
+    # === 检测是否被 @ 或回复（用于日志，不影响响应）===
     is_mentioned = False
-    expected_mention = f"@{BOT_USERNAME}"
+    is_reply_to_bot = False
+
     if is_group and "entities" in message:
+        expected_mention = f"@{BOT_USERNAME}"
         for entity in message["entities"]:
             if entity["type"] == "mention":
                 mentioned = text[entity["offset"]:entity["offset"] + entity["length"]]
@@ -82,46 +101,42 @@ def handle_incoming_message(message):
                     is_mentioned = True
                     break
 
-    # 检查是否回复机器人
-    is_reply_to_bot = False
     if "reply_to_message" in message:
         replied_msg = message["reply_to_message"]
         if replied_msg.get("from", {}).get("id") == bot_id:
             is_reply_to_bot = True
 
-    # === 打印详细日志 ===
+    # === 日志记录 ===
     logger.info(f"📥 收到消息 | 群聊: {is_group} | 文本: '{text}'")
-    logger.info(f"🔍 @检测: is_mentioned={is_mentioned}, 回复Bot: {is_reply_to_bot}")
-    if "entities" in message:
-        logger.info(f"📄 entities: {message['entities']}")
+    logger.info(f"🔍 @检测: {is_mentioned}, 回复Bot: {is_reply_to_bot}")
 
-    should_respond = False
-    if not is_group:
-        should_respond = True
-    else:
-        if is_mentioned or is_reply_to_bot:
-            should_respond = True
-
-    if not should_respond:
-        logger.info("🔇 静默忽略（未触发响应条件）")
-        return
-
+    # === 关键逻辑：只要不是自己发的，就处理（因 Privacy 已关闭）===
+    # 不再限制 must be @ or replied — 全群消息都可触发关键词
     replies = get_replies()
 
     reply_pool = []
     triggered_by_keyword = False
+
+    # 尝试匹配关键词
     for keyword in replies["keywords"]:
         if keyword in text:
             reply_pool = replies["keywords"][keyword]
             triggered_by_keyword = True
             break
 
+    # 如果没匹配到关键词：
     if not triggered_by_keyword:
-        if is_group and (is_mentioned or is_reply_to_bot):
-            reply_pool = replies["mentioned_or_replied"]
-        elif not is_group:
+        if is_group:
+            # 群聊中无关键词 → 可选：不回复，或用 fallback
+            # 这里我们选择：**不回复无关键词的普通消息**
+            # （避免“啊”“哦”之外的闲聊触发 fallback）
+            logger.info("🔇 无关键词匹配，静默忽略")
+            return
+        else:
+            # 私聊：用 fallback
             reply_pool = replies["fallback"]
 
+    # 如果有回复内容
     if reply_pool:
         reply_text = random.choice(reply_pool)
         logger.info(f"📤 发送回复: '{reply_text}' 到 {chat_id}")
