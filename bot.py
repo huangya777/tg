@@ -3,8 +3,6 @@ import json
 import random
 import requests
 from flask import Flask, request, jsonify
-from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CONFIG_URL = os.environ.get("CONFIG_URL")
@@ -12,7 +10,7 @@ CONFIG_URL = os.environ.get("CONFIG_URL")
 if not BOT_TOKEN:
     raise RuntimeError("❌ Missing BOT_TOKEN")
 
-WEBHOOK_PATH = "/webhook"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 REPLIES_CACHE = None
 REPLIES_LOADED = False
@@ -20,7 +18,7 @@ REPLIES_LOADED = False
 def load_replies():
     global REPLIES_CACHE, REPLIES_LOADED
     try:
-        res = requests.get(CONFIG_URL, timeout=3)
+        res = requests.get(CONFIG_URL, timeout=5)
         res.raise_for_status()
         data = res.json()
         required = {"keywords", "mentioned_or_replied", "fallback"}
@@ -30,8 +28,8 @@ def load_replies():
     except Exception as e:
         print(f"⚠️ Config load failed: {e}")
         REPLIES_CACHE = {
-            "keywords": {},
-            "mentioned_or_replied": ["我在呢～（配置加载失败）"],
+            "keywords": {"测试": ["✅ 配置加载失败，但我在运行！"]},
+            "mentioned_or_replied": ["我在（备用模式）"],
             "fallback": ["嗯？（配置异常）"]
         }
     REPLIES_LOADED = True
@@ -41,33 +39,31 @@ def get_replies():
         load_replies()
     return REPLIES_CACHE
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_incoming_message(message):
     replies = get_replies()
-    message = update.message
-    if not message or not message.text:
-        return
+    text = message.get("text", "").strip()
+    chat_id = message["chat"]["id"]
+    from_user = message["from"]
+    bot_id = int(BOT_TOKEN.split(":")[0])  # 从 token 提取 bot ID
 
-    text = message.text.strip()
-    bot_id = context.bot.id
-    bot_username = context.bot.username
-
-    is_mentioned = f"@{bot_username}" in text
+    # 判断是否被提及或回复
+    is_mentioned = f"@{message.get('entities', [])}"  # 简化：直接用关键词匹配
     is_reply_to_bot = (
-        message.reply_to_message and
-        message.reply_to_message.from_user and
-        message.reply_to_message.from_user.id == bot_id
+        message.get("reply_to_message") and
+        message["reply_to_message"].get("from", {}).get("id") == bot_id
     )
 
     reply_pool = []
     triggered = False
 
+    # 关键词匹配
     for keyword in replies["keywords"]:
         if keyword in text:
             reply_pool = replies["keywords"][keyword]
             triggered = True
             break
 
-    if not triggered and (is_mentioned or is_reply_to_bot):
+    if not triggered and (f"@xiaotaotaoo_bot" in text or is_reply_to_bot):
         reply_pool = replies["mentioned_or_replied"]
         triggered = True
 
@@ -75,17 +71,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_pool = replies["fallback"]
 
     if reply_pool:
-        await message.reply_text(random.choice(reply_pool))
+        reply_text = random.choice(reply_pool)
+        # 直接调用 Telegram API 发送回复
+        requests.post(
+            f"{TELEGRAM_API}/sendMessage",
+            json={"chat_id": chat_id, "text": reply_text}
+        )
 
 app = Flask(__name__)
 
-@app.route(WEBHOOK_PATH, methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "OK", 200
+    try:
+        data = request.get_json()
+        if data and "message" in data and "text" in data["message"]:
+            handle_incoming_message(data["message"])
+        return "OK", 200
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+        return "OK", 200  # 始终返回 200 避免 Telegram 重试
 
 @app.route("/health")
 def health_check():
