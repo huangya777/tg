@@ -12,7 +12,7 @@ CONFIG_URL = os.environ.get("CONFIG_URL")
 if not BOT_TOKEN:
     raise RuntimeError("❌ Missing BOT_TOKEN")
 
-WEBHOOK_PATH = f"/{BOT_TOKEN}"
+WEBHOOK_PATH = "/webhook"
 
 REPLIES_CACHE = None
 REPLIES_LOADED = False
