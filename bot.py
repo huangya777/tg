@@ -4,125 +4,147 @@ import random
 import requests
 from flask import Flask, request, jsonify
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CONFIG_URL = os.environ.get("CONFIG_URL")
+app = Flask(__name__)
 
-if not BOT_TOKEN:
-    raise RuntimeError("❌ Missing BOT_TOKEN")
-
+# === 配置 ===
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+BOT_USERNAME = os.environ["BOT_USERNAME"]  # e.g. "xiaotaotaoo_bot"
+CONFIG_URL = os.environ.get(
+    "CONFIG_URL",
+    "https://raw.githubusercontent.com/huangya777/tg/main/replies.json"
+)
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-REPLIES_CACHE = None
-REPLIES_LOADED = False
+# 默认安全回复（防止配置加载失败）
+DEFAULT_REPLIES = {
+    "keywords": {},
+    "mentioned_or_replied": ["我在！但配置异常，请检查 replies.json"],
+    "fallback": ["配置异常，请联系管理员"]
+}
 
-def load_replies():
-    global REPLIES_CACHE, REPLIES_LOADED
-    try:
-        print("🔍 正在尝试加载配置文件...")
-        print(f"🌐 CONFIG_URL: {CONFIG_URL}")
-        res = requests.get(CONFIG_URL, timeout=8)
-        print(f"📥 HTTP 状态码: {res.status_code}")
-        if res.status_code != 200:
-            raise Exception(f"HTTP {res.status_code}")
-        data = res.json()
-        print("📄 原始配置内容:", data)
-
-        # 检查必要字段
-        required = {"keywords", "mentioned_or_replied", "fallback"}
-        if not required.issubset(data.keys()):
-            missing = required - set(data.keys())
-            raise ValueError(f"缺少必要字段: {missing}")
-
-        REPLIES_CACHE = data
-        print("✅ 配置加载成功！")
-    except Exception as e:
-        print(f"⚠️ 配置加载失败: {e}")
-        REPLIES_CACHE = {
-            "keywords": {"测试": ["🔧 配置加载失败，但我在运行！"]},
-            "mentioned_or_replied": ["我在（安全模式）"],
-            "fallback": ["嗯？（配置异常）"]
-        }
-    REPLIES_LOADED = True
+_config_cache = None
 
 def get_replies():
-    if not REPLIES_LOADED:
-        load_replies()
-    return REPLIES_CACHE
+    global _config_cache
+    try:
+        res = requests.get(CONFIG_URL, timeout=5)
+        res.raise_for_status()
+        _config_cache = res.json()
+    except Exception as e:
+        print(f"⚠️ 配置加载失败: {e}")
+        _config_cache = DEFAULT_REPLIES
+    return _config_cache
+
+@app.route('/reload-config', methods=['GET'])
+def reload_config():
+    global _config_cache
+    _config_cache = None
+    get_replies()  # 重新加载
+    return jsonify({"status": "Config reloaded"}), 200
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = request.json
+    if "message" in update:
+        handle_incoming_message(update["message"])
+    return '', 200
 
 def handle_incoming_message(message):
-    replies = get_replies()
-    text = message.get("text", "").strip()
-    chat_id = message["chat"]["id"]
+    # 忽略非文本消息（如图片、贴纸等）
+    if "text" not in message:
+        return
+
+    text = message["text"].strip()
+    chat = message["chat"]
+    chat_id = chat["id"]
+    from_user = message.get("from", {})
+    user_id = from_user.get("id")
+
+    # 获取 Bot 自身 ID 和用户名
     bot_id = int(BOT_TOKEN.split(":")[0])
+    bot_username = BOT_USERNAME
 
-    # 判断是否被 @ 提及（正确方式）
+    # 🔒 关键：忽略机器人自己的消息（防止刷屏）
+    if user_id == bot_id:
+        return
+
+    # 判断是否群聊
+    is_group = chat["type"] in ("group", "supergroup")
+
+    # 检查是否被 @ 提及
     is_mentioned = False
-    entities = message.get("entities", [])
-    for entity in entities:
-        if entity.get("type") == "mention":
-            mentioned_text = text[entity["offset"]:entity["offset"] + entity["length"]]
-            if mentioned_text == "@xiaotaotaoo_bot":
-                is_mentioned = True
-                break
+    if is_group and "entities" in message:
+        for entity in message["entities"]:
+            if entity["type"] == "mention":
+                mentioned = text[entity["offset"]:entity["offset"] + entity["length"]]
+                if mentioned == f"@{bot_username}":
+                    is_mentioned = True
+                    break
 
-    is_reply_to_bot = (
-        message.get("reply_to_message") and
-        message["reply_to_message"].get("from", {}).get("id") == bot_id
-    )
+    # 检查是否回复机器人
+    is_reply_to_bot = False
+    if "reply_to_message" in message:
+        replied_msg = message["reply_to_message"]
+        if replied_msg.get("from", {}).get("id") == bot_id:
+            is_reply_to_bot = True
 
+    # 决定是否响应
+    should_respond = False
+    if not is_group:
+        # 私聊：总是响应
+        should_respond = True
+    else:
+        # 群聊：必须被 @ 或 回复才响应
+        if is_mentioned or is_reply_to_bot:
+            should_respond = True
+
+    if not should_respond:
+        return  # 静默忽略
+
+    # 加载回复配置
+    replies = get_replies()
+
+    # 匹配关键词
     reply_pool = []
-    triggered = False
-
-    # 关键词匹配
+    triggered_by_keyword = False
     for keyword in replies["keywords"]:
         if keyword in text:
             reply_pool = replies["keywords"][keyword]
-            triggered = True
+            triggered_by_keyword = True
             break
 
-    if not triggered and (is_mentioned or is_reply_to_bot):
-        reply_pool = replies["mentioned_or_replied"]
-        triggered = True
+    # 未触发关键词时的兜底逻辑
+    if not triggered_by_keyword:
+        if is_group and (is_mentioned or is_reply_to_bot):
+            reply_pool = replies["mentioned_or_replied"]
+        elif not is_group:
+            reply_pool = replies["fallback"]
 
-    if not triggered:
-        reply_pool = replies["fallback"]
-
+    # 发送回复
     if reply_pool:
         reply_text = random.choice(reply_pool)
         print(f"📤 发送回复: '{reply_text}' 到聊天 {chat_id}")
+
         try:
-            requests.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={"chat_id": chat_id, "text": reply_text},
-                timeout=5
-            )
+            if reply_text.startswith("voice:"):
+                filename = reply_text.replace("voice:", "").strip()
+                voice_url = f"https://github.com/huangya777/tg/releases/download/v1.0/{filename}"
+                voice_data = requests.get(voice_url, timeout=10).content
+                requests.post(
+                    f"{TELEGRAM_API}/sendVoice",
+                    data={"chat_id": chat_id},
+                    files={"voice": ("voice.ogg", voice_data, "audio/ogg")},
+                    timeout=10
+                )
+            else:
+                actual_text = reply_text.replace("text:", "").strip()
+                requests.post(
+                    f"{TELEGRAM_API}/sendMessage",
+                    json={"chat_id": chat_id, "text": actual_text},
+                    timeout=5
+                )
         except Exception as e:
-            print(f"❌ 发送消息失败: {e}")
+            print(f"❌ 发送失败: {e}")
 
-app = Flask(__name__)
-
-@app.route("/webhook", methods=["POST"])
-def telegram_webhook():
-    print("📬 收到新消息！")
-    try:
-        data = request.get_json(force=True)
-        if data and "message" in data and "text" in data["message"]:
-            handle_incoming_message(data["message"])
-        else:
-            print("ℹ️ 非文本消息或格式不符，忽略")
-        return "OK", 200
-    except Exception as e:
-        print(f"💥 Webhook 处理崩溃: {e}")
-        return "OK", 200
-
-@app.route("/health")
-def health_check():
-    return "✅ Bot is running on Vercel!"
-
-@app.route("/reload-config")
-def reload_config():
-    global REPLIES_LOADED
-    print("🔄 手动触发配置重载")
-    REPLIES_LOADED = False
-    get_replies()
-    return jsonify({"status": "Config reloaded"})
+if __name__ == '__main__':
+    app.run(debug=True)
