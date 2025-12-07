@@ -59,6 +59,7 @@ def handle_incoming_message(message):
     chat_id = chat["id"]
     from_user = message.get("from", {})
     user_id = from_user.get("id")
+    message_id = message["message_id"]  # ← 新增：获取消息ID用于回复
 
     # 获取 Bot 自身 ID 和用户名
     bot_id = int(BOT_TOKEN.split(":")[0])
@@ -130,17 +131,26 @@ def handle_incoming_message(message):
                 filename = reply_text.replace("voice:", "").strip()
                 voice_url = f"https://github.com/huangya777/tg/releases/download/v1.0/{filename}"
                 voice_data = requests.get(voice_url, timeout=10).content
+                # 发送语音并回复原消息
                 requests.post(
                     f"{TELEGRAM_API}/sendVoice",
-                    data={"chat_id": chat_id},
+                    data={
+                        "chat_id": chat_id,
+                        "reply_to_message_id": message_id  # ← 关键：实现回复效果
+                    },
                     files={"voice": ("voice.ogg", voice_data, "audio/ogg")},
                     timeout=10
                 )
             else:
                 actual_text = reply_text.replace("text:", "").strip()
+                # 发送文字并回复原消息
                 requests.post(
                     f"{TELEGRAM_API}/sendMessage",
-                    json={"chat_id": chat_id, "text": actual_text},
+                    json={
+                        "chat_id": chat_id,
+                        "text": actual_text,
+                        "reply_to_message_id": message_id  # ← 关键：实现回复效果
+                    },
                     timeout=5
                 )
         except Exception as e:
