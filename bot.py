@@ -160,7 +160,7 @@ def handle_incoming_message(message):
             if reply_text.startswith("voice:"):
                 filename = reply_text.replace("voice:", "").strip()
                 # ✅ 关键修改：从 Vercel 的 public 目录加载语音
-                voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/public/{filename}"
+                voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/_static/{filename}"
                 voice_data = requests.get(voice_url, timeout=10).content
                 requests.post(
                     f"{TELEGRAM_API}/sendVoice",
