@@ -159,7 +159,7 @@ def handle_incoming_message(message):
         # === 发送回复：语音 or 文本 ===
         if reply_text.startswith("voice:"):
             filename = reply_text.replace("voice:", "").strip()
-            voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/_static/{filename}"
+            voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/public/{filename}"
             print(f"🔊 DEBUG：尝试加载语音文件：{voice_url}")
             
             try:
