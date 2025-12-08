@@ -158,36 +158,26 @@ def handle_incoming_message(message):
 
         try:
             if reply_text.startswith("voice:"):
-                filename = reply_text.replace("voice:", "").strip()
-                # ✅ 关键修改：从 Vercel 的 public 目录加载语音
-                voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/_static/{filename}"
-                print(f"🔊 DEBUG: 尝试加载语音文件: {voice_url}")
-                # 尝试下载文件并打印大小
-resp = requests.get(voice_url, timeout=10)
-print(f"📥 语音文件状态码: {resp.status_code}, 大小: {len(resp.content)} 字节")
-                voice_data = requests.get(voice_url, timeout=10).content
-                requests.post(
-                    f"{TELEGRAM_API}/sendVoice",
-                    data={
-                        "chat_id": chat_id,
-                        "reply_to_message_id": message_id
-                    },
-                    files={"voice": ("voice.ogg", voice_data, "audio/ogg")},
-                    timeout=10
-                )
-            else:
-                actual_text = reply_text.replace("text:", "").strip()
-                requests.post(
-                    f"{TELEGRAM_API}/sendMessage",
-                    json={
-                        "chat_id": chat_id,
-                        "text": actual_text,
-                        "reply_to_message_id": message_id
-                    },
-                    timeout=5
-                )
-        except Exception as e:
-            logger.error(f"❌ 发送失败: {e}")
+    filename = reply_text.replace("voice:", "").strip()
+    voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/_static/{filename}"
+    print(f"🔊 DEBUG：尝试加载语音文件：{voice_url}")
+    
+    try:
+        resp = requests.get(voice_url, timeout=10)
+        print(f"📥 语音文件状态码：{resp.status_code}，大小：{len(resp.content)} 字节")
+        resp.raise_for_status()  # 如果状态码不是 2xx，会抛出异常
+        
+        voice_data = resp.content
+        send_resp = requests.post(
+            f"{TELEGRAM_API}/sendVoice",
+            data={"chat_id": chat_id, "reply_to_message_id": message_id},
+            files={"voice": ("voice.ogg", voice_data, "audio/ogg")},
+            timeout=10
+        )
+        print(f"📤 Telegram 发送结果：{send_resp.status_code}")
+        
+    except Exception as e:
+        print(f"❌ 语音发送失败：{e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
