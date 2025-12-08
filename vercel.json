@@ -7,12 +7,10 @@
     }
   ],
   "routes": [
-    // ✅ 先匹配 public/ 路径（静态文件）
     {
       "src": "/public/(.*)",
       "dest": "/public/$1"
     },
-    // ✅ 再处理其他请求
     {
       "src": "/(.*)",
       "dest": "bot.py"
