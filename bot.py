@@ -162,6 +162,9 @@ def handle_incoming_message(message):
                 # ✅ 关键修改：从 Vercel 的 public 目录加载语音
                 voice_url = f"https://{os.environ.get('VERCEL_URL', 'your-bot.vercel.app')}/_static/{filename}"
                 print(f"🔊 DEBUG: 尝试加载语音文件: {voice_url}")
+                # 尝试下载文件并打印大小
+resp = requests.get(voice_url, timeout=10)
+print(f"📥 语音文件状态码: {resp.status_code}, 大小: {len(resp.content)} 字节")
                 voice_data = requests.get(voice_url, timeout=10).content
                 requests.post(
                     f"{TELEGRAM_API}/sendVoice",
