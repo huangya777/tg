@@ -124,17 +124,20 @@ def handle_incoming_message(message):
             triggered_by_keyword = True
             break
 
-    # 如果没匹配到关键词：
-    if not triggered_by_keyword:
-        if is_group:
-            # 群聊中无关键词 → 可选：不回复，或用 fallback
-            # 这里我们选择：**不回复无关键词的普通消息**
-            # （避免“啊”“哦”之外的闲聊触发 fallback）
-            logger.info("🔇 无关键词匹配，静默忽略")
-            return
+    # 如果没匹配到关键词
+if not triggered_by_keyword:
+    if is_group:
+        # 群聊：检查是否回复了机器人
+        if is_reply_to_bot:
+            # 即使没关键词，也回复 mentioned_or_replied 池
+            reply_pool = replies.get("mentioned_or_replied", ["我在呢～"])
         else:
-            # 私聊：用 fallback
-            reply_pool = replies["fallback"]
+            # 普通群消息（非 @、非回复、无关键词）→ 静默
+            logger.info("🔇 无关键词且未回复机器人，静默忽略")
+            return
+    else:
+        # 私聊：用 fallback
+        reply_pool = replies.get("fallback", ["你好呀～"])
 
     # 如果有回复内容
     if reply_pool:
