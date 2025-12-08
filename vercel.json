@@ -6,14 +6,5 @@
       "use": "@vercel/python"
     }
   ],
-  "routes": [
-    {
-      "src": "/public/(.*)",
-      "dest": "/public/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "bot.py"
-    }
-  ]
+  "routes": []
 }
