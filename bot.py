@@ -1,3 +1,4 @@
+# === 导入 ===
 import os
 import json
 import random
@@ -5,13 +6,19 @@ import requests
 import logging
 import time
 from collections import defaultdict
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory  # 👈 包含 send_from_directory
 
-# 日志配置
+# === 日志配置 ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# === 初始化应用 ===
 app = Flask(__name__)
+
+# === 静态文件服务 ===
+@app.route('/public/<path:filename>')
+def serve_static(filename):
+    return send_from_directory('public', filename)
 
 # === 配置 ===
 BOT_TOKEN = os.environ["BOT_TOKEN"]
