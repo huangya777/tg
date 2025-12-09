@@ -164,6 +164,20 @@ def handle_incoming_message(message):
         return
 
     text = message["text"]
+    # ===== 新增：输入 /reload 就刷新配置 =====
+if not is_group and text == "/reload":
+    global _config_cache, _dynamic_cache
+    _config_cache = None
+    _dynamic_cache = None
+    get_replies()
+    get_dynamic_replies()
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={"chat_id": chat_id, "text": "✅ 配置已刷新！现在可以测试关键词了~"},
+        timeout=10
+    )
+    return
+# ======================================
     chat = message["chat"]
     chat_id = chat["id"]
     from_user = message.get("from", {})
