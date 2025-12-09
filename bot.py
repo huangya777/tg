@@ -156,28 +156,12 @@ def webhook():
         handle_incoming_message(update["message"])
     return '', 200
 
-# ... handle_incoming_message 和 handle_user_upload 基本不变，只改一行 ...
-
 def handle_incoming_message(message):
     if "text" not in message:
         handle_user_upload(message)
         return
 
     text = message["text"]
-    # ===== 新增：输入 /reload 就刷新配置 =====
-if not is_group and text == "/reload":
-    global _config_cache, _dynamic_cache
-    _config_cache = None
-    _dynamic_cache = None
-    get_replies()
-    get_dynamic_replies()
-    requests.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={"chat_id": chat_id, "text": "✅ 配置已刷新！现在可以测试关键词了~"},
-        timeout=10
-    )
-    return
-# ======================================
     chat = message["chat"]
     chat_id = chat["id"]
     from_user = message.get("from", {})
@@ -189,6 +173,23 @@ if not is_group and text == "/reload":
         return
 
     is_group = chat["type"] in ("group", "supergroup")
+
+    # ✅ 第一件事：处理 /reload 指令（必须在所有逻辑之前！）
+    if not is_group and text == "/reload":
+        global _config_cache, _dynamic_cache
+        _config_cache = None
+        _dynamic_cache = None
+        get_replies()
+        get_dynamic_replies()
+        try:
+            requests.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json={"chat_id": chat_id, "text": "✅ 配置已刷新！现在可以测试关键词了~"},
+                timeout=10
+            )
+        except Exception as e:
+            logger.error(f"❌ 发送 /reload 回复失败: {e}")
+        return  # ⚠️ 直接返回，不继续处理
 
     current_time = time.time()
     if current_time - _last_trigger[user_id] < COOLDOWN_SECONDS:
@@ -215,7 +216,7 @@ if not is_group and text == "/reload":
             is_reply_to_bot = True
 
     replies_static = get_replies()
-    replies_dynamic = get_dynamic_replies()  # ✅ 改这里！
+    replies_dynamic = get_dynamic_replies()
     merged_replies = merge_replies(replies_static, replies_dynamic)
 
     reply_pool = []
