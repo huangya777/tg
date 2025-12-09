@@ -207,8 +207,11 @@ def handle_incoming_message(message):
     reply_pool = []
     triggered_by_keyword = False
 
+    logger.info(f"🔍 收到文本消息: '{text}' (长度: {len(text)})")
+    logger.info(f"🔑 当前所有关键词: {list(merged_replies.keys())}")
     for keyword in merged_replies:
         if keyword in text:
+            logger.info(f"🎯 触发关键词: '{keyword}' (在文本中找到)")
             pool = []
             pool.extend([("text", t) for t in merged_replies[keyword].get("text", [])])
             pool.extend([("voice", v) for v in merged_replies[keyword].get("voice", [])])
