@@ -1,6 +1,5 @@
 # === 导入 ===
 import os
-import json
 import random
 import requests
 import logging
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 # === 初始化应用 ===
 app = Flask(__name__)
 
-# === 静态文件服务（用于托管用户上传的语音等）===
+# === 静态文件服务（保留但基本不用）===
 @app.route('/public/<path:filename>')
 def serve_static(filename):
     return send_from_directory('public', filename)
@@ -27,23 +26,13 @@ CONFIG_URL = os.environ.get(
     "CONFIG_URL",
     "https://raw.githubusercontent.com/huangya777/tg/main/replies.json"
 )
-# ✅ 新增：动态数据源（建议使用 GitHub raw）
-DYNAMIC_URL = os.environ.get(
-    "DYNAMIC_URL",
-    "https://raw.githubusercontent.com/huangya777/tg/main/dynamic.json"  # ← 请替换为你自己的
-)
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# JSONBin 配置（仅用于写入，读取改用 DYNAMIC_URL）
-JSONBIN_IO_API_KEY = os.environ.get("JSONBIN_IO_API_KEY")
-JSONBIN_IO_BIN_ID = os.environ.get("JSONBIN_IO_BIN_ID")
-JSONBIN_IO_WRITE_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_IO_BIN_ID}"
-
-# 防刷冷却：每个用户 3 秒内只响应一次
+# 防刷冷却
 _last_trigger = defaultdict(float)
 COOLDOWN_SECONDS = 3
 
-# 防重复回复：记录每个用户上一次的完整回复标识（避免短时间内完全相同）
+# 防重复回复
 _last_user_reply = defaultdict(str)
 
 # 默认安全回复
@@ -54,11 +43,11 @@ DEFAULT_REPLIES = {
 }
 
 _config_cache = None
-_dynamic_cache = None  # 改名，不再叫 _jsonbin_cache
 
 def get_replies():
-    """加载预设关键词回复（仅文本）"""
     global _config_cache
+    if _config_cache is not None:
+        return _config_cache
     try:
         res = requests.get(CONFIG_URL, timeout=5)
         res.raise_for_status()
@@ -68,85 +57,11 @@ def get_replies():
         _config_cache = DEFAULT_REPLIES
     return _config_cache
 
-def get_dynamic_replies():
-    """✅ 优先从 GitHub (DYNAMIC_URL) 加载，失败再尝试 JSONBin（只读）"""
-    global _dynamic_cache
-    
-    # 尝试从 DYNAMIC_URL 加载
-    try:
-        res = requests.get(DYNAMIC_URL, timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        _dynamic_cache = data
-        logger.info(f"✅ 从 DYNAMIC_URL 加载动态数据: {list(data.keys())[:3]}...")
-        return data
-    except Exception as e:
-        logger.warning(f"⚠️ DYNAMIC_URL 加载失败，尝试 JSONBin: {e}")
-    
-    # 回退到 JSONBin（只读）
-    if not JSONBIN_IO_API_KEY or not JSONBIN_IO_BIN_ID:
-        return {}
-    try:
-        headers = {"X-Access-Key": JSONBIN_IO_API_KEY}
-        read_url = f"https://api.jsonbin.io/v3/b/{JSONBIN_IO_BIN_ID}/latest"
-        res = requests.get(read_url, headers=headers, timeout=5)
-        res.raise_for_status()
-        result = res.json()
-        # 注意：JSONBin v3 返回格式是 {"record": {...}}，但我们之前已去掉包装？
-        # 为兼容，这里做智能判断
-        if isinstance(result, dict):
-            if "record" in result:
-                data = result["record"]
-            else:
-                data = result
-        else:
-            data = {}
-        _dynamic_cache = data
-        logger.info(f"✅ 从 JSONBin 加载动态数据: {list(data.keys())[:3]}...")
-        return data
-    except Exception as e:
-        logger.error(f"❌ JSONBin 读取也失败: {e}")
-        return {}
-
-def save_to_jsonbin(data):
-    """保存数据到 JSONBin（仅当配置了 KEY 时）"""
-    if not JSONBIN_IO_API_KEY or not JSONBIN_IO_BIN_ID:
-        return
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "X-Access-Key": JSONBIN_IO_API_KEY
-        }
-        # ✅ JSONBin v3 要求写入时必须是 {"record": data}
-        payload = {"record": data}
-        res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=payload, timeout=10)
-        res.raise_for_status()
-        logger.info("✅ 用户数据已保存到 JSONBin")
-    except Exception as e:
-        logger.error(f"❌ 保存到 JSONBin 失败: {e}")
-
-def merge_replies(static_replies, dynamic_data):
-    """合并静态文本回复 + 动态语音/贴纸"""
-    merged = {}
-    for kw, texts in static_replies.get("keywords", {}).items():
-        merged[kw] = {"text": texts, "voice": [], "sticker": []}
-    for kw, items in dynamic_data.items():
-        if kw not in merged:
-            merged[kw] = {"text": [], "voice": [], "sticker": []}
-        for item in items:
-            if item.startswith("voice:"):
-                merged[kw]["voice"].append(item[6:])
-            elif item.startswith("sticker:"):
-                merged[kw]["sticker"].append(item[8:])
-    return merged
-
 @app.route('/reload-config', methods=['GET'])
 def reload_config():
-    global _config_cache, _dynamic_cache
+    global _config_cache
     _config_cache = None
-    _dynamic_cache = None
     get_replies()
-    get_dynamic_replies()
     return jsonify({"status": "Config reloaded"}), 200
 
 @app.route('/webhook', methods=['POST'])
@@ -157,11 +72,6 @@ def webhook():
     return '', 200
 
 def handle_incoming_message(message):
-    if "text" not in message:
-        handle_user_upload(message)
-        return
-
-    text = message["text"]
     chat = message["chat"]
     chat_id = chat["id"]
     from_user = message.get("from", {})
@@ -174,36 +84,35 @@ def handle_incoming_message(message):
 
     is_group = chat["type"] in ("group", "supergroup")
 
-    # ✅ 第一件事：处理 /reload 指令（必须在所有逻辑之前！）
-    if not is_group and text == "/reload":
-        global _config_cache, _dynamic_cache
+    # 处理 /reload（仅私聊）
+    if "text" in message and not is_group and message["text"] == "/reload":
+        global _config_cache
         _config_cache = None
-        _dynamic_cache = None
         get_replies()
-        get_dynamic_replies()
         try:
             requests.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={"chat_id": chat_id, "text": "✅ 配置已刷新！现在可以测试关键词了~"},
+                json={"chat_id": chat_id, "text": "✅ 配置已刷新！"},
                 timeout=10
             )
         except Exception as e:
-            logger.error(f"❌ 发送 /reload 回复失败: {e}")
-        return  # ⚠️ 直接返回，不继续处理
+            logger.error(f"❌ /reload 回复失败: {e}")
+        return
 
     current_time = time.time()
     if current_time - _last_trigger[user_id] < COOLDOWN_SECONDS:
         return
     _last_trigger[user_id] = current_time
 
+    # 检查是否被提及或回复
     is_mentioned = False
     is_reply_to_bot = False
 
-    if is_group and "entities" in message:
+    if is_group and "entities" in message and "text" in message:
         expected_mention = f"@{BOT_USERNAME}"
         for entity in message["entities"]:
             if entity["type"] == "mention":
-                mentioned = text[entity["offset"]:entity["offset"] + entity["length"]]
+                mentioned = message["text"][entity["offset"]:entity["offset"] + entity["length"]]
                 if mentioned.lower().strip() == expected_mention.lower():
                     is_mentioned = True
                     break
@@ -215,43 +124,39 @@ def handle_incoming_message(message):
         if replied_user_id == bot_id:
             is_reply_to_bot = True
 
-    replies_static = get_replies()
-    replies_dynamic = get_dynamic_replies()
-    merged_replies = merge_replies(replies_static, replies_dynamic)
-
+    replies = get_replies()
     reply_pool = []
     triggered_by_keyword = False
 
-    logger.info(f"🔍 收到文本消息: '{text}' (长度: {len(text)})")
-    logger.info(f"🔑 当前所有关键词: {list(merged_replies.keys())}")
-    for keyword in merged_replies:
-        if keyword in text:
-            logger.info(f"🎯 触发关键词: '{keyword}' (在文本中找到)")
-            pool = []
-            pool.extend([("text", t) for t in merged_replies[keyword].get("text", [])])
-            pool.extend([("voice", v) for v in merged_replies[keyword].get("voice", [])])
-            pool.extend([("sticker", s) for s in merged_replies[keyword].get("sticker", [])])
-            if pool:
-                reply_pool = pool
+    # 如果是文本消息，尝试关键词匹配
+    if "text" in message:
+        text = message["text"]
+        logger.info(f"🔍 收到文本: '{text}'")
+        for keyword in replies.get("keywords", {}):
+            if keyword in text:
+                texts = replies["keywords"][keyword]
+                reply_pool = [("text", t) for t in texts]
                 triggered_by_keyword = True
+                logger.info(f"🎯 触发关键词: '{keyword}'")
                 break
 
+    # 如果没触发关键词，则根据场景决定是否回复
     if not triggered_by_keyword:
         if is_group:
             if is_mentioned or is_reply_to_bot:
-                pool = []
-                pool.extend([("text", t) for t in replies_static.get("mentioned_or_replied", [])])
-                reply_pool = pool
+                pool_texts = replies.get("mentioned_or_replied", [])
+                reply_pool = [("text", t) for t in pool_texts]
             else:
-                return
+                return  # 群聊不@不回复
         else:
-            pool = []
-            pool.extend([("text", t) for t in replies_static.get("fallback", [])])
-            reply_pool = pool
+            # 私聊：无论发文字、贴纸、语音，都走 fallback
+            pool_texts = replies.get("fallback", [])
+            reply_pool = [("text", t) for t in pool_texts]
 
     if not reply_pool:
         return
 
+    # 防重复
     last_reply = _last_user_reply.get(user_id, "")
     chosen = random.choice(reply_pool)
     reply_type, content = chosen
@@ -265,93 +170,22 @@ def handle_incoming_message(message):
 
     _last_user_reply[user_id] = reply_key
 
+    # 发送回复（只支持文本）
     try:
-        if reply_type == "voice":
-            requests.post(
-                f"{TELEGRAM_API}/sendVoice",
-                data={
-                    "chat_id": chat_id,
-                    "voice": content,
-                    "reply_to_message_id": message_id
-                },
-                timeout=10
-            )
-        elif reply_type == "sticker":
-            requests.post(
-                f"{TELEGRAM_API}/sendSticker",
-                data={
-                    "chat_id": chat_id,
-                    "sticker": content,
-                    "reply_to_message_id": message_id
-                },
-                timeout=10
-            )
-        else:  # text
-            requests.post(
-                f"{TELEGRAM_API}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": content,
-                    "reply_to_message_id": message_id,
-                    "parse_mode": "HTML"
-                },
-                timeout=10
-            )
-    except Exception as e:
-        logger.error(f"❌ 发送消息失败: {e}")
-
-def handle_user_upload(message):
-    """处理用户上传的语音/贴纸（需回复机器人并带关键词）"""
-    chat = message["chat"]
-    chat_id = chat["id"]
-    from_user = message.get("from", {})
-    user_id = from_user.get("id")
-    message_id = message["message_id"]
-
-    bot_id = int(BOT_TOKEN.split(":")[0])
-    if user_id == bot_id:
-        return
-
-    if "reply_to_message" not in message:
-        return
-
-    replied_msg = message["reply_to_message"]
-    if "text" not in replied_msg:
-        return
-
-    keyword = replied_msg["text"].strip()
-    if not keyword:
-        return
-
-    new_item = None
-    if "voice" in message:
-        file_id = message["voice"]["file_id"]
-        new_item = f"voice:{file_id}"
-    elif "sticker" in message:
-        sticker_id = message["sticker"]["file_id"]
-        new_item = f"sticker:{sticker_id}"
-    else:
-        return
-
-    # 保存到 JSONBin（仍支持上传）
-    data = get_dynamic_replies()  # 注意：这里读的是当前动态数据（可能来自 GitHub）
-    # 但为了写入，我们强制从 JSONBin 读最新（或初始化）
-    # 更安全做法：直接基于现有 data 更新
-    if keyword not in data:
-        data[keyword] = []
-    if new_item not in data[keyword]:
-        data[keyword].append(new_item)
-        save_to_jsonbin(data)  # 写入 JSONBin
-
-    try:
-        msg = "✅ 已将该内容添加为关键词“{}”的回复！".format(keyword)
         requests.post(
             f"{TELEGRAM_API}/sendMessage",
-            json={"chat_id": chat_id, "text": msg, "reply_to_message_id": message_id},
+            json={
+                "chat_id": chat_id,
+                "text": content,
+                "reply_to_message_id": message_id,
+                "parse_mode": "HTML"
+            },
             timeout=10
         )
     except Exception as e:
-        logger.error(f"❌ 确认消息发送失败: {e}")
+        logger.error(f"❌ 发送失败: {e}")
+
+# 注意：已完全移除 handle_user_upload！
 
 if __name__ == '__main__':
     app.run(debug=True)
