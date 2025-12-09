@@ -73,7 +73,7 @@ def get_jsonbin_data():
         headers = {"X-Access-Key": JSONBIN_IO_API_KEY}
         res = requests.get(JSONBIN_IO_READ_URL, headers=headers, timeout=5)
         res.raise_for_status()
-        data = res.json()["record"]
+        data = res.json()  # ✅ 直接使用整个 JSON，不再取 .record
         _jsonbin_cache = data
         return data
     except Exception as e:
@@ -89,8 +89,8 @@ def save_to_jsonbin(data):
             "Content-Type": "application/json",
             "X-Access-Key": JSONBIN_IO_API_KEY
         }
-        payload = {"record": data}
-        res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=payload, timeout=10)
+        # ✅ 不再包装成 {"record": data}，直接发送 data
+        res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=data, timeout=10)
         res.raise_for_status()
         logger.info("✅ 用户数据已保存到 JSONBin")
     except Exception as e:
