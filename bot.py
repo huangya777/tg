@@ -70,7 +70,7 @@ def get_jsonbin_data():
     if not JSONBIN_IO_API_KEY or not JSONBIN_IO_BIN_ID:
         return {}
     try:
-        headers = {"X-Master-Key": JSONBIN_IO_API_KEY}
+        headers = {"X-Access-Key": JSONBIN_IO_API_KEY}
         res = requests.get(JSONBIN_IO_READ_URL, headers=headers, timeout=5)
         res.raise_for_status()
         data = res.json()["record"]
@@ -87,7 +87,7 @@ def save_to_jsonbin(data):
     try:
         headers = {
             "Content-Type": "application/json",
-            "X-Master-Key": JSONBIN_IO_API_KEY
+            "X-Access-Key": JSONBIN_IO_API_KEY
         }
         payload = {"record": data}
         res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=payload, timeout=10)
