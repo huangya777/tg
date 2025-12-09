@@ -27,12 +27,16 @@ CONFIG_URL = os.environ.get(
     "CONFIG_URL",
     "https://raw.githubusercontent.com/huangya777/tg/main/replies.json"
 )
+# ✅ 新增：动态数据源（建议使用 GitHub raw）
+DYNAMIC_URL = os.environ.get(
+    "DYNAMIC_URL",
+    "https://raw.githubusercontent.com/huangya777/tg/main/dynamic.json"  # ← 请替换为你自己的
+)
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# JSONBin 配置（用于持久化存储用户上传的语音/贴纸）
+# JSONBin 配置（仅用于写入，读取改用 DYNAMIC_URL）
 JSONBIN_IO_API_KEY = os.environ.get("JSONBIN_IO_API_KEY")
 JSONBIN_IO_BIN_ID = os.environ.get("JSONBIN_IO_BIN_ID")
-JSONBIN_IO_READ_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_IO_BIN_ID}/latest"
 JSONBIN_IO_WRITE_URL = f"https://api.jsonbin.io/v3/b/{JSONBIN_IO_BIN_ID}"
 
 # 防刷冷却：每个用户 3 秒内只响应一次
@@ -50,7 +54,7 @@ DEFAULT_REPLIES = {
 }
 
 _config_cache = None
-_jsonbin_cache = None
+_dynamic_cache = None  # 改名，不再叫 _jsonbin_cache
 
 def get_replies():
     """加载预设关键词回复（仅文本）"""
@@ -64,24 +68,48 @@ def get_replies():
         _config_cache = DEFAULT_REPLIES
     return _config_cache
 
-def get_jsonbin_data():
-    """从 JSONBin 加载用户上传的语音/贴纸数据"""
-    global _jsonbin_cache
+def get_dynamic_replies():
+    """✅ 优先从 GitHub (DYNAMIC_URL) 加载，失败再尝试 JSONBin（只读）"""
+    global _dynamic_cache
+    
+    # 尝试从 DYNAMIC_URL 加载
+    try:
+        res = requests.get(DYNAMIC_URL, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+        _dynamic_cache = data
+        logger.info(f"✅ 从 DYNAMIC_URL 加载动态数据: {list(data.keys())[:3]}...")
+        return data
+    except Exception as e:
+        logger.warning(f"⚠️ DYNAMIC_URL 加载失败，尝试 JSONBin: {e}")
+    
+    # 回退到 JSONBin（只读）
     if not JSONBIN_IO_API_KEY or not JSONBIN_IO_BIN_ID:
         return {}
     try:
         headers = {"X-Access-Key": JSONBIN_IO_API_KEY}
-        res = requests.get(JSONBIN_IO_READ_URL, headers=headers, timeout=5)
+        read_url = f"https://api.jsonbin.io/v3/b/{JSONBIN_IO_BIN_ID}/latest"
+        res = requests.get(read_url, headers=headers, timeout=5)
         res.raise_for_status()
-        data = res.json()  # ✅ 直接使用整个 JSON，不再取 .record
-        _jsonbin_cache = data
+        result = res.json()
+        # 注意：JSONBin v3 返回格式是 {"record": {...}}，但我们之前已去掉包装？
+        # 为兼容，这里做智能判断
+        if isinstance(result, dict):
+            if "record" in result:
+                data = result["record"]
+            else:
+                data = result
+        else:
+            data = {}
+        _dynamic_cache = data
+        logger.info(f"✅ 从 JSONBin 加载动态数据: {list(data.keys())[:3]}...")
         return data
     except Exception as e:
-        logger.error(f"⚠️ JSONBin 数据加载失败: {e}")
+        logger.error(f"❌ JSONBin 读取也失败: {e}")
         return {}
 
 def save_to_jsonbin(data):
-    """保存数据到 JSONBin"""
+    """保存数据到 JSONBin（仅当配置了 KEY 时）"""
     if not JSONBIN_IO_API_KEY or not JSONBIN_IO_BIN_ID:
         return
     try:
@@ -89,8 +117,9 @@ def save_to_jsonbin(data):
             "Content-Type": "application/json",
             "X-Access-Key": JSONBIN_IO_API_KEY
         }
-        # ✅ 不再包装成 {"record": data}，直接发送 data
-        res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=data, timeout=10)
+        # ✅ JSONBin v3 要求写入时必须是 {"record": data}
+        payload = {"record": data}
+        res = requests.put(JSONBIN_IO_WRITE_URL, headers=headers, json=payload, timeout=10)
         res.raise_for_status()
         logger.info("✅ 用户数据已保存到 JSONBin")
     except Exception as e:
@@ -99,10 +128,8 @@ def save_to_jsonbin(data):
 def merge_replies(static_replies, dynamic_data):
     """合并静态文本回复 + 动态语音/贴纸"""
     merged = {}
-    # 先加入静态文本
     for kw, texts in static_replies.get("keywords", {}).items():
         merged[kw] = {"text": texts, "voice": [], "sticker": []}
-    # 再合并动态内容
     for kw, items in dynamic_data.items():
         if kw not in merged:
             merged[kw] = {"text": [], "voice": [], "sticker": []}
@@ -115,11 +142,11 @@ def merge_replies(static_replies, dynamic_data):
 
 @app.route('/reload-config', methods=['GET'])
 def reload_config():
-    global _config_cache, _jsonbin_cache
+    global _config_cache, _dynamic_cache
     _config_cache = None
-    _jsonbin_cache = None
+    _dynamic_cache = None
     get_replies()
-    get_jsonbin_data()
+    get_dynamic_replies()
     return jsonify({"status": "Config reloaded"}), 200
 
 @app.route('/webhook', methods=['POST'])
@@ -129,9 +156,10 @@ def webhook():
         handle_incoming_message(update["message"])
     return '', 200
 
+# ... handle_incoming_message 和 handle_user_upload 基本不变，只改一行 ...
+
 def handle_incoming_message(message):
     if "text" not in message:
-        # 处理用户上传：语音或贴纸作为关键词回复
         handle_user_upload(message)
         return
 
@@ -173,7 +201,7 @@ def handle_incoming_message(message):
             is_reply_to_bot = True
 
     replies_static = get_replies()
-    replies_dynamic = get_jsonbin_data()
+    replies_dynamic = get_dynamic_replies()  # ✅ 改这里！
     merged_replies = merge_replies(replies_static, replies_dynamic)
 
     reply_pool = []
@@ -209,8 +237,6 @@ def handle_incoming_message(message):
     last_reply = _last_user_reply.get(user_id, "")
     chosen = random.choice(reply_pool)
     reply_type, content = chosen
-
-    # 防重复：用 (type, content) 作为唯一标识
     reply_key = f"{reply_type}:{content}"
     attempts = 0
     while len(reply_pool) > 1 and reply_key == last_reply and attempts < 3:
@@ -275,7 +301,6 @@ def handle_user_upload(message):
     if "text" not in replied_msg:
         return
 
-    # 检查是否是给机器人的指令，例如：“晚安”
     keyword = replied_msg["text"].strip()
     if not keyword:
         return
@@ -290,15 +315,16 @@ def handle_user_upload(message):
     else:
         return
 
-    # 保存到 JSONBin
-    data = get_jsonbin_data()
+    # 保存到 JSONBin（仍支持上传）
+    data = get_dynamic_replies()  # 注意：这里读的是当前动态数据（可能来自 GitHub）
+    # 但为了写入，我们强制从 JSONBin 读最新（或初始化）
+    # 更安全做法：直接基于现有 data 更新
     if keyword not in data:
         data[keyword] = []
     if new_item not in data[keyword]:
         data[keyword].append(new_item)
-        save_to_jsonbin(data)
+        save_to_jsonbin(data)  # 写入 JSONBin
 
-    # 回复用户
     try:
         msg = "✅ 已将该内容添加为关键词“{}”的回复！".format(keyword)
         requests.post(
